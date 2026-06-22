@@ -1,6 +1,11 @@
 {
-  "rewrites": [
-    { "source": "/api/kis", "destination": "/api/kis" },
-    { "source": "/(.*)", "destination": "/public/index.html" }
+  "version": 2,
+  "builds": [
+    { "src": "api/kis.js", "use": "@vercel/node" },
+    { "src": "public/index.html", "use": "@vercel/static" }
+  ],
+  "routes": [
+    { "src": "/api/kis", "dest": "/api/kis.js" },
+    { "src": "/(.*)", "dest": "/public/index.html" }
   ]
 }
