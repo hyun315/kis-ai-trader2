@@ -256,7 +256,7 @@ function App(){
     for(const ticker of watchList){
       if(!runningRef.current) break;
       await analyzeTicker(ticker);
-      await new Promise(r=>setTimeout(r,1500)); // API 호출 간격
+      await new Promise(r=>setTimeout(r,4000)); // API 호출 간격 (KIS 초당 제한 방지)
     }
     addLog(`─── 사이클 완료. 다음 분석: ${interval}분 후 ───`);
     await refreshBalance();
