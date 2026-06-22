@@ -5,7 +5,14 @@
     { "src": "public/index.html", "use": "@vercel/static" }
   ],
   "routes": [
-    { "src": "/api/kis", "dest": "/api/kis.js" },
+    {
+      "src": "/api/kis",
+      "dest": "/api/kis.js",
+      "headers": {
+        "Cache-Control": "no-store, no-cache, must-revalidate",
+        "Pragma": "no-cache"
+      }
+    },
     { "src": "/(.*)", "dest": "/public/index.html" }
   ]
 }
