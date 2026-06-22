@@ -49,17 +49,15 @@ async function getToken(appKey,appSecret,mode){
 }
 async function getPrice(ticker,cred,mode){const d=await proxyGET("/uapi/domestic-stock/v1/quotations/inquire-price",{tr_id:TR[mode].price,FID_COND_MRKT_DIV_CODE:"J",FID_INPUT_ISCD:ticker},cred,mode);return d.output;}
 async function getChart(ticker,cred,mode){
-  const today=new Date(),end=today.toISOString().slice(0,10).replace(/-/g,""),start=new Date(today-40*86400000).toISOString().slice(0,10).replace(/-/g,"");
+  // FHKST01010400: 날짜 파라미터 없음, output 키 사용 (최근 30일)
   const d=await proxyGET("/uapi/domestic-stock/v1/quotations/inquire-daily-price",{
     tr_id:"FHKST01010400",
     FID_COND_MRKT_DIV_CODE:"J",
     FID_INPUT_ISCD:ticker,
     FID_PERIOD_DIV_CODE:"D",
-    FID_ORG_ADJ_PRC:"0",
-    FID_INPUT_DATE_1:start,
-    FID_INPUT_DATE_2:end
+    FID_ORG_ADJ_PRC:"0000000001",
   },cred,mode);
-  return(d.output2||[]).slice(0,30).reverse();
+  return(d.output||[]).slice(0,30).reverse();
 }
 async function getBalance(cred,mode){return proxyGET("/uapi/domestic-stock/v1/trading/inquire-balance",{tr_id:TR[mode].balance,CANO:cred.accountNo.slice(0,8),ACNT_PRDT_CD:cred.accountNo.slice(8)||"01",AFHR_FLPR_YN:"N",OFL_YN:"",INQR_DVSN:"02",UNPR_DVSN:"01",FUND_STTL_ICLD_YN:"N",FNCG_AMT_AUTO_RDPT_YN:"N",PRCS_DVSN:"01",CTX_AREA_FK100:"",CTX_AREA_NK100:""},cred,mode);}
 async function placeOrder(ticker,qty,price,side,cred,mode){
