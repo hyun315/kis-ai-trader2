@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>KIS AI AutoTrader</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600;700&display=swap');
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0a0e1a;color:#e5e7eb;font-family:'JetBrains Mono','Fira Code',monospace;font-size:14px}
+::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:#111827}::-webkit-scrollbar-thumb{background:#1e2d45;border-radius:2px}
+input,select,button{font-family:'JetBrains Mono',monospace}
+.blink{animation:blink 1.2s step-end infinite}@keyframes blink{50%{opacity:0}}
+.fade{animation:fade .3s ease}@keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+.glow{animation:glow 2s infinite}@keyframes glow{0%,100%{box-shadow:0 0 0 0 rgba(245,158,11,.4)}50%{box-shadow:0 0 0 8px rgba(245,158,11,0)}}
+.spin{animation:spin 1s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const T={bg:"#0a0e1a",panel:"#111827",panel2:"#0f1623",border:"#1e2d45",accent:"#f59e0b",red:"#ef4444",green:"#22c55e",muted:"#6b7280",text:"#e5e7eb",sub:"#9ca3af"};
+const KIS_REAL="https://openapi.koreainvestment.com:9443";
+const KIS_VTS="https://openapivts.koreainvestment.com:29443";
+const PROXY="/api/kis";
+const TR={real:{order_buy:"TTTC0802U",order_sell:"TTTC0801U",balance:"TTTC8434R",price:"FHKST01010100",chart:"FHKST01010400"},virtual:{order_buy:"VTTC0802U",order_sell:"VTTC0801U",balance:"VTTC8434R",price:"FHKST01010100",chart:"FHKST01010400"}};
+const base=mode=>mode==="real"?KIS_REAL:KIS_VTS;
+
+// ── API ──────────────────────────────────────────────────────────────────────
+async function proxyGET(path,query,cred,mode){
+  const target=new URL(base(mode)+path);
+  const{tr_id,...rest}=query;
+  Object.entries(rest).forEach(([k,v])=>target.searchParams.set(k,v));
+  const res=await fetch(`${PROXY}?target=${encodeURIComponent(target.toString())}`,{headers:{authorization:`Bearer ${cred.accessToken}`,appkey:cred.appKey,appsecret:cred.appSecret,tr_id}});
+  const d=await res.json();if(d.rt_cd&&d.rt_cd!=="0")throw new Error(d.msg1||`API 오류`);return d;
+}
+async function proxyPOST(path,body,tr_id,cred,mode){
+  const target=base(mode)+path;
+  const res=await fetch(`${PROXY}?target=${encodeURIComponent(target)}`,{method:"POST",headers:{"Content-Type":"application/json",authorization:`Bearer ${cred.accessToken}`,appkey:cred.appKey,appsecret:cred.appSecret,tr_id},body:JSON.stringify(body)});
+  const d=await res.json();if(d.rt_cd&&d.rt_cd!=="0")throw new Error(d.msg1||`주문 오류`);return d;
+}
+async function getToken(appKey,appSecret,mode){
+  const target=`${base(mode)}/oauth2/tokenP`;
+  const res=await fetch(`${PROXY}?target=${encodeURIComponent(target)}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({grant_type:"client_credentials",appkey:appKey,appsecret:appSecret})});
+  const d=await res.json();if(!d.access_token)throw new Error(d.error_description||"토큰 발급 실패");return d.access_token;
+}
+async function getPrice(ticker,cred,mode){const d=await proxyGET("/uapi/domestic-stock/v1/quotations/inquire-price",{tr_id:TR[mode].price,FID_COND_MRKT_DIV_CODE:"J",FID_INPUT_ISCD:ticker},cred,mode);return d.output;}
+async function getChart(ticker,cred,mode){
+  // FHKST01010400: 날짜 파라미터 없음, output 키 사용 (최근 30일)
+  const d=await proxyGET("/uapi/domestic-stock/v1/quotations/inquire-daily-price",{
+    tr_id:"FHKST01010400",
+    FID_COND_MRKT_DIV_CODE:"J",
+    FID_INPUT_ISCD:ticker,
+    FID_PERIOD_DIV_CODE:"D",
+    FID_ORG_ADJ_PRC:"0000000001",
+  },cred,mode);
+  return(d.output||[]).slice(0,30).reverse();
+}
+async function getBalance(cred,mode){return proxyGET("/uapi/domestic-stock/v1/trading/inquire-balance",{tr_id:TR[mode].balance,CANO:cred.accountNo.slice(0,8),ACNT_PRDT_CD:cred.accountNo.slice(8)||"01",AFHR_FLPR_YN:"N",OFL_YN:"",INQR_DVSN:"02",UNPR_DVSN:"01",FUND_STTL_ICLD_YN:"N",FNCG_AMT_AUTO_RDPT_YN:"N",PRCS_DVSN:"01",CTX_AREA_FK100:"",CTX_AREA_NK100:""},cred,mode);}
+async function placeOrder(ticker,qty,price,side,cred,mode){
+  const tr_id=side==="buy"?TR[mode].order_buy:TR[mode].order_sell;
+  return proxyPOST("/uapi/domestic-stock/v1/trading/order-cash",{CANO:cred.accountNo.slice(0,8),ACNT_PRDT_CD:cred.accountNo.slice(8)||"01",PDNO:ticker,ORD_DVSN:"01",ORD_QTY:String(qty),ORD_UNPR:"0"},tr_id,cred,mode);
+}
+
+// ── 지표 ─────────────────────────────────────────────────────────────────────
+function calcSMA(c,n){if(c.length<n)return null;return c.slice(-n).reduce((a,b)=>a+b,0)/n;}
+function calcRSI(c,n=14){if(c.length<n+1)return null;const ch=c.slice(1).map((v,i)=>v-c[i]);const ag=ch.slice(-n).filter(x=>x>0).reduce((a,b)=>a+b,0)/n;const al=ch.slice(-n).filter(x=>x<0).map(x=>-x).reduce((a,b)=>a+b,0)/n;return al===0?100:100-100/(1+ag/al);}
+function calcMACD(c){if(c.length<26)return null;const ema=(arr,p)=>{const k=2/(p+1);return arr.reduce((pv,x,i)=>i===0?x:pv*(1-k)+x*k,arr[0]);};return ema(c.slice(-12),12)-ema(c.slice(-26),26);}
+function computeInd(candles){
+  const cl=candles.map(c=>parseFloat(c.stck_clpr)),vo=candles.map(c=>parseFloat(c.acml_vol));
+  return{close:cl.at(-1),sma5:calcSMA(cl,5),sma20:calcSMA(cl,20),rsi:calcRSI(cl),macd:calcMACD(cl),avgVol:vo.slice(-5).reduce((a,b)=>a+b,0)/5,todayVol:vo.at(-1)};
+}
+
+// ── Claude AI ─────────────────────────────────────────────────────────────────
+async function aiAnalyze(stockInfo,ind){
+  const prompt=`한국 주식 AI 자동매매 시스템. JSON만 출력. 마크다운 없이.
+종목:${stockInfo.hts_kor_isnm}(${stockInfo.mksc_shrn_iscd}) 현재가:${parseInt(stockInfo.stck_prpr).toLocaleString()}원 등락:${stockInfo.prdy_ctrt}%
+RSI:${ind.rsi?.toFixed(1)??"N/A"}${ind.rsi>70?" 과매수":ind.rsi<30?" 과매도":""} MACD:${ind.macd?.toFixed(0)??"N/A"}
+5일선:${ind.sma5?.toFixed(0)??"N/A"} 20일선:${ind.sma20?.toFixed(0)??"N/A"} 현재가위치:${ind.sma20?((ind.close-ind.sma20)/ind.sma20*100).toFixed(1):"N/A"}%
+거래량/평균:${ind.avgVol?(ind.todayVol/ind.avgVol*100).toFixed(0):"N/A"}%
+{"action":"매수"|"매도"|"관망","confidence":정수,"targetPrice":정수,"stopLoss":정수,"qty":1~5,"reason":"한줄근거"}`;
+  const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:300,messages:[{role:"user",content:prompt}]})});
+  const data=await res.json();
+  return JSON.parse((data.content||[]).map(b=>b.text||"").join("").replace(/```json|```/g,"").trim());
+}
+
+// ── 서브 컴포넌트 ─────────────────────────────────────────────────────────────
+function Badge({color,children}){return <span style={{background:`${color}20`,border:`1px solid ${color}50`,color,borderRadius:20,padding:"2px 8px",fontSize:10,whiteSpace:"nowrap"}}>{children}</span>;}
+
+function LogPanel({log}){
+  const ref=React.useRef(null);
+  React.useEffect(()=>{if(ref.current)ref.current.scrollTop=ref.current.scrollHeight;},[log]);
+  return(
+    <div style={{background:T.panel,border:`1px solid ${T.border}`,borderRadius:10,padding:14}}>
+      <div style={{fontSize:11,color:T.muted,marginBottom:8,letterSpacing:1}}>실시간 로그</div>
+      <div ref={ref} style={{height:160,overflowY:"auto",display:"flex",flexDirection:"column",gap:2}}>
+        {log.length===0&&<div style={{color:T.muted,fontSize:12}}>엔진 시작 시 로그가 표시됩니다.</div>}
+        {log.map((l,i)=>(
+          <div key={i} style={{fontSize:11,color:l.type==="error"?T.red:l.type==="success"?T.green:l.type==="warn"?T.accent:l.type==="order"?"#a78bfa":T.sub}}>
+            <span style={{color:T.border,marginRight:6}}>{l.t}</span>{l.msg}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── 메인 앱 ──────────────────────────────────────────────────────────────────
+function App(){
+  // 인증
+  const[screen,setScreen]=React.useState("login");
+  const[mode,setMode]=React.useState("virtual");
+  const[cred,setCred]=React.useState({appKey:"",appSecret:"",accessToken:"",accountNo:""});
+  const[tokenBusy,setTokenBusy]=React.useState(false);
+  const[tokenErr,setTokenErr]=React.useState("");
+
+  // 자동매매 설정
+  const[watchList,setWatchList]=React.useState(["005930","000660","035420"]); // 감시종목
+  const[addTicker,setAddTicker]=React.useState("");
+  const[interval,setIntervalMin]=React.useState(5);       // 분석 주기 (분)
+  const[minConfidence,setMinConfidence]=React.useState(75); // 최소 신뢰도
+  const[maxPerStock,setMaxPerStock]=React.useState(500000); // 종목당 최대 투자금
+  const[dailyLossLimit,setDailyLossLimit]=React.useState(200000); // 일일 손실 한도
+  const[autoMode,setAutoMode]=React.useState(false);       // 자동매매 ON/OFF
+
+  // 상태
+  const[running,setRunning]=React.useState(false);
+  const[log,setLog]=React.useState([]);
+  const[balance,setBalance]=React.useState(null);
+  const[positions,setPositions]=React.useState({}); // {ticker: {qty, buyPrice, targetPrice, stopLoss}}
+  const[todayPnl,setTodayPnl]=React.useState(0);
+  const[tradeHistory,setTradeHistory]=React.useState([]);
+  const[stockStatus,setStockStatus]=React.useState({}); // {ticker: {price, action, confidence, lastChecked}}
+  const[dailyLossHit,setDailyLossHit]=React.useState(false);
+
+  const timerRef=React.useRef(null);
+  const runningRef=React.useRef(false);
+  const positionsRef=React.useRef({});
+  const todayPnlRef=React.useRef(0);
+
+  const addLog=React.useCallback((msg,type="info")=>{
+    const t=new Date().toLocaleTimeString("ko-KR");
+    setLog(p=>[...p.slice(-200),{t,msg,type}]);
+  },[]);
+
+  // ── 로그인 ──
+  const handleConnect=async()=>{
+    setTokenBusy(true);setTokenErr("");
+    try{const token=await getToken(cred.appKey,cred.appSecret,mode);setCred(p=>({...p,accessToken:token}));setScreen("main");addLog(`[${mode==="real"?"실전":"모의"}] 연결 완료`,"success");}
+    catch(e){setTokenErr(e.message);}
+    finally{setTokenBusy(false);}
+  };
+
+  // ── 잔고 새로고침 ──
+  const refreshBalance=async()=>{
+    try{const b=await getBalance(cred,mode);setBalance(b);}catch(e){addLog(`잔고 오류: ${e.message}`,"warn");}
+  };
+
+  // ── 손절/익절 감시 ──
+  const checkExitConditions=async(ticker,currentPrice)=>{
+    const pos=positionsRef.current[ticker];
+    if(!pos) return false;
+    if(currentPrice>=pos.targetPrice){
+      addLog(`🎯 ${ticker} 목표가 도달! ${currentPrice.toLocaleString()}원 → 자동 매도`,"order");
+      await executeOrder(ticker,pos.qty,"sell","익절");
+      return true;
+    }
+    if(currentPrice<=pos.stopLoss){
+      addLog(`🛑 ${ticker} 손절가 도달! ${currentPrice.toLocaleString()}원 → 자동 매도`,"error");
+      await executeOrder(ticker,pos.qty,"sell","손절");
+      return true;
+    }
+    return false;
+  };
+
+  // ── 주문 실행 ──
+  const executeOrder=async(ticker,qty,side,reason)=>{
+    try{
+      const d=await placeOrder(ticker,qty,0,side,cred,mode);
+      const now=new Date().toLocaleTimeString("ko-KR");
+      const priceInfo=stockStatus[ticker];
+      const price=priceInfo?.price||0;
+      if(side==="buy"){
+        const newPos={qty,buyPrice:price,targetPrice:priceInfo?.targetPrice||0,stopLoss:priceInfo?.stopLoss||0};
+        positionsRef.current={...positionsRef.current,[ticker]:newPos};
+        setPositions(p=>({...p,[ticker]:newPos}));
+        addLog(`✅ 매수 체결: ${ticker} ${qty}주 @${price.toLocaleString()}원 [${reason}]`,"success");
+      } else {
+        const pos=positionsRef.current[ticker];
+        if(pos){
+          const pnl=(price-pos.buyPrice)*pos.qty;
+          todayPnlRef.current+=pnl;
+          setTodayPnl(p=>p+pnl);
+          const newPos={...positionsRef.current};delete newPos[ticker];
+          positionsRef.current=newPos;
+          setPositions(newPos);
+          addLog(`✅ 매도 체결: ${ticker} ${qty}주 @${price.toLocaleString()}원 [${reason}] PnL:${pnl>=0?"+":""}${pnl.toLocaleString()}원`,"success");
+          if(todayPnlRef.current<=-dailyLossLimit){
+            addLog(`🚨 일일 손실 한도(${dailyLossLimit.toLocaleString()}원) 초과! 자동매매 중단`,"error");
+            setDailyLossHit(true);stopEngine();
+          }
+        }
+      }
+      setTradeHistory(h=>[{time:now,ticker,side,qty,price,reason},...h.slice(0,49)]);
+      await refreshBalance();
+    }catch(e){addLog(`주문 실패 ${ticker}: ${e.message}`,"error");}
+  };
+
+  // ── 단일 종목 분석 사이클 ──
+  const analyzeTicker=async(ticker)=>{
+    try{
+      const [priceData,chart]=await Promise.all([getPrice(ticker,cred,mode),getChart(ticker,cred,mode)]);
+      const currentPrice=parseInt(priceData.stck_prpr);
+      const ind=computeInd(chart);
+
+      // 보유중이면 손절/익절 먼저
+      if(positionsRef.current[ticker]){
+        const exited=await checkExitConditions(ticker,currentPrice);
+        if(exited) return;
+      }
+
+      // AI 분석
+      const ai=await aiAnalyze(priceData,ind);
+      setStockStatus(p=>({...p,[ticker]:{price:currentPrice,action:ai.action,confidence:ai.confidence,targetPrice:ai.targetPrice,stopLoss:ai.stopLoss,reason:ai.reason,lastChecked:new Date().toLocaleTimeString("ko-KR")}}));
+
+      addLog(`[${ticker}] ${priceData.hts_kor_isnm} ${currentPrice.toLocaleString()}원 → AI: ${ai.action} (${ai.confidence}%) ${ai.reason}`);
+
+      if(!autoMode) return;
+
+      // 자동 주문 조건
+      const hasPosition=!!positionsRef.current[ticker];
+      const balData=balance?.output2?.[0];
+      const cash=parseInt(balData?.dnca_tot_amt||0);
+
+      if(ai.action==="매수"&&ai.confidence>=minConfidence&&!hasPosition){
+        const cost=currentPrice*ai.qty;
+        if(cost>maxPerStock){addLog(`[${ticker}] 투자한도 초과 (${cost.toLocaleString()}원 > ${maxPerStock.toLocaleString()}원)`,"warn");return;}
+        if(cost>cash){addLog(`[${ticker}] 잔고 부족`,"warn");return;}
+        addLog(`🚀 ${ticker} 자동 매수 실행! 신뢰도 ${ai.confidence}%`,"order");
+        setStockStatus(p=>({...p,[ticker]:{...p[ticker],targetPrice:ai.targetPrice,stopLoss:ai.stopLoss}}));
+        await executeOrder(ticker,ai.qty,"buy","AI자동");
+      } else if(ai.action==="매도"&&ai.confidence>=minConfidence&&hasPosition){
+        addLog(`📤 ${ticker} 자동 매도 실행! 신뢰도 ${ai.confidence}%`,"order");
+        await executeOrder(ticker,positionsRef.current[ticker].qty,"sell","AI자동");
+      }
+    }catch(e){addLog(`[${ticker}] 분석 오류: ${e.message}`,"error");}
+  };
+
+  // ── 엔진 루프 ──
+  const runCycle=async()=>{
+    if(!runningRef.current) return;
+    addLog(`─── 분석 사이클 시작 (${watchList.length}개 종목) ───`);
+    for(const ticker of watchList){
+      if(!runningRef.current) break;
+      await analyzeTicker(ticker);
+      await new Promise(r=>setTimeout(r,4000)); // API 호출 간격 (KIS 초당 제한 방지)
+    }
+    addLog(`─── 사이클 완료. 다음 분석: ${interval}분 후 ───`);
+    await refreshBalance();
+  };
+
+  const startEngine=async()=>{
+    if(runningRef.current) return;
+    runningRef.current=true;setRunning(true);setDailyLossHit(false);todayPnlRef.current=0;setTodayPnl(0);
+    addLog(`🟢 자동매매 엔진 시작 [${mode==="real"?"실전":"모의"}] 주기:${interval}분 신뢰도:${minConfidence}%+`,"success");
+    await runCycle();
+    timerRef.current=setInterval(runCycle,interval*60*1000);
+  };
+
+  const stopEngine=()=>{
+    runningRef.current=false;setRunning(false);
+    if(timerRef.current){clearInterval(timerRef.current);timerRef.current=null;}
+    addLog("🔴 자동매매 엔진 중지","warn");
+  };
+
+  React.useEffect(()=>()=>{if(timerRef.current)clearInterval(timerRef.current);},[]);
+
+  // ── 수동 분석 (단일) ──
+  const manualAnalyze=async(ticker)=>{
+    addLog(`[수동] ${ticker} 분석 시작...`);
+    await analyzeTicker(ticker);
+  };
+
+  const modeColor=mode==="real"?T.red:T.green;
+  const pnlColor=todayPnl>=0?T.green:T.red;
+
+  // ══ 로그인 화면 ══
+  if(screen==="login") return(
+    <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:T.bg,padding:20}}>
+      <div style={{width:"100%",maxWidth:440,background:T.panel,border:`1px solid ${T.border}`,borderRadius:12,padding:32}}>
+        <div style={{marginBottom:24}}>
+          <div style={{fontSize:11,color:T.accent,letterSpacing:3,marginBottom:8}}>KIS DEVELOPERS</div>
+          <h1 style={{fontSize:20,fontWeight:700}}>AI 자동매매 시스템</h1>
+          <p style={{fontSize:11,color:T.muted,marginTop:4}}>한국투자증권 OpenAPI + Claude AI · 완전 자동화</p>
+        </div>
+        <div style={{display:"flex",gap:8,marginBottom:18,background:T.bg,borderRadius:8,padding:4}}>
+          {["virtual","real"].map(m=><button key={m} onClick={()=>setMode(m)} style={{flex:1,border:"none",borderRadius:6,padding:"9px 0",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit",background:mode===m?(m==="real"?T.red:T.green):"transparent",color:mode===m?"#000":T.muted}}>{m==="real"?"🔴 실전투자":"🟢 모의투자"}</button>)}
+        </div>
+        {mode==="real"&&<div style={{background:"#1f0a0a",border:`1px solid ${T.red}50`,borderRadius:8,padding:"10px 14px",marginBottom:14,fontSize:11,color:T.red,lineHeight:1.7}}>⚠️ <b>실전투자</b> — 실제 자금이 자동으로 사용됩니다.<br/>반드시 모의투자로 충분히 테스트 후 사용하세요.</div>}
+        {[{label:"App Key",key:"appKey"},{label:"App Secret",key:"appSecret"},{label:"계좌번호 (숫자만)",key:"accountNo"}].map(f=>(
+          <div key={f.key} style={{marginBottom:12}}>
+            <label style={{display:"block",fontSize:11,color:T.muted,marginBottom:4}}>{f.label}</label>
+            <input type="password" value={cred[f.key]} onChange={e=>setCred(p=>({...p,[f.key]:e.target.value.replace(/\s/g,"")}))}
+              style={{width:"100%",background:T.bg,border:`1px solid ${T.border}`,borderRadius:6,padding:"9px 12px",color:T.text,fontSize:13,outline:"none"}}/>
+          </div>
+        ))}
+        {tokenErr&&<div style={{background:"#1f0a0a",border:`1px solid ${T.red}40`,borderRadius:6,padding:"9px 12px",color:T.red,fontSize:12,marginBottom:12}}>{tokenErr}</div>}
+        <button onClick={handleConnect} disabled={tokenBusy||!cred.appKey||!cred.appSecret||!cred.accountNo} className={!tokenBusy?"glow":""}
+          style={{width:"100%",background:mode==="real"?T.red:T.accent,color:"#000",border:"none",borderRadius:8,padding:"13px 0",fontSize:14,fontWeight:700,cursor:"pointer",opacity:(tokenBusy||!cred.appKey||!cred.appSecret||!cred.accountNo)?0.4:1,marginBottom:12}}>
+          {tokenBusy?"연결 중...":`${mode==="real"?"실전":"모의"} 투자 시작`}
+        </button>
+        <div style={{fontSize:11,color:T.muted,lineHeight:1.7,padding:"10px 12px",background:T.panel2,borderRadius:8,border:`1px solid ${T.border}`}}>🔒 키는 브라우저 메모리에만 저장됩니다.</div>
+      </div>
+    </div>
+  );
+
+  // ══ 메인 화면 ══
+  return(
+    <div style={{minHeight:"100vh",background:T.bg,padding:14,maxWidth:980,margin:"0 auto"}}>
+
+      {/* 헤더 */}
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14,paddingBottom:10,borderBottom:`1px solid ${T.border}`}}>
+        <div style={{display:"flex",alignItems:"center",gap:12}}>
+          <span style={{fontSize:13,color:T.accent,letterSpacing:2,fontWeight:700}}>KIS AI AUTOTRADER</span>
+          <Badge color={modeColor}>{mode==="real"?"🔴 실전":"🟢 모의"}</Badge>
+          {running&&<Badge color={T.green}><span className="blink">●</span> 실행중</Badge>}
+          {dailyLossHit&&<Badge color={T.red}>⛔ 손실한도 중단</Badge>}
+        </div>
+        <div style={{display:"flex",gap:8,alignItems:"center"}}>
+          <span style={{fontSize:12,color:pnlColor,fontWeight:700}}>오늘 PnL: {todayPnl>=0?"+":""}{todayPnl.toLocaleString()}원</span>
+          <button onClick={()=>{stopEngine();setScreen("login");}} style={{background:"none",border:`1px solid ${T.border}`,color:T.muted,borderRadius:6,padding:"3px 10px",fontSize:11,cursor:"pointer"}}>재연결</button>
+        </div>
+      </div>
+
+      <div style={{display:"grid",gridTemplateColumns:"300px 1fr",gap:14}}>
+
+        {/* 왼쪽: 설정 패널 */}
+        <div style={{display:"flex",flexDirection:"column",gap:12}}>
+
+          {/* 엔진 제어 */}
+          <div style={{background:T.panel,border:`1px solid ${running?T.green:T.border}`,borderRadius:10,padding:16}}>
+            <div style={{fontSize:11,color:T.muted,marginBottom:12,letterSpacing:1}}>엔진 제어</div>
+
+            {/* 자동매매 토글 */}
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14,background:T.bg,borderRadius:8,padding:"10px 14px"}}>
+              <div>
+                <div style={{fontSize:12,fontWeight:700,color:autoMode?T.green:T.muted}}>자동 주문 실행</div>
+                <div style={{fontSize:10,color:T.muted,marginTop:2}}>OFF: 분석만 / ON: 자동 매매</div>
+              </div>
+              <div onClick={()=>setAutoMode(p=>!p)} style={{width:44,height:24,background:autoMode?T.green:T.border,borderRadius:12,cursor:"pointer",position:"relative",transition:"background .2s"}}>
+                <div style={{position:"absolute",top:2,left:autoMode?22:2,width:20,height:20,background:"#fff",borderRadius:10,transition:"left .2s"}}/>
+              </div>
+            </div>
+
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
+              {[
+                {label:"분석 주기 (분)",val:interval,set:setIntervalMin,min:1,max:60},
+                {label:"최소 신뢰도 (%)",val:minConfidence,set:setMinConfidence,min:50,max:95},
+              ].map(f=>(
+                <div key={f.label}>
+                  <div style={{fontSize:10,color:T.muted,marginBottom:4}}>{f.label}</div>
+                  <input type="number" value={f.val} min={f.min} max={f.max} onChange={e=>f.set(Math.min(f.max,Math.max(f.min,parseInt(e.target.value)||f.min)))}
+                    disabled={running}
+                    style={{width:"100%",background:T.bg,border:`1px solid ${T.border}`,borderRadius:6,padding:"7px 8px",color:T.text,fontSize:13,fontWeight:700,outline:"none",textAlign:"center"}}/>
+                </div>
+              ))}
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:14}}>
+              {[
+                {label:"종목당 최대 (원)",val:maxPerStock,set:setMaxPerStock,step:100000},
+                {label:"일손실 한도 (원)",val:dailyLossLimit,set:setDailyLossLimit,step:50000},
+              ].map(f=>(
+                <div key={f.label}>
+                  <div style={{fontSize:10,color:T.muted,marginBottom:4}}>{f.label}</div>
+                  <input type="number" value={f.val} step={f.step} onChange={e=>f.set(parseInt(e.target.value)||0)}
+                    disabled={running}
+                    style={{width:"100%",background:T.bg,border:`1px solid ${T.border}`,borderRadius:6,padding:"7px 8px",color:T.text,fontSize:12,outline:"none"}}/>
+                </div>
+              ))}
+            </div>
+
+            {running?(
+              <button onClick={stopEngine} style={{width:"100%",background:`${T.red}20`,border:`1px solid ${T.red}`,color:T.red,borderRadius:8,padding:"12px 0",fontSize:14,fontWeight:700,cursor:"pointer"}}>
+                ⏹ 엔진 중지
+              </button>
+            ):(
+              <button onClick={startEngine} disabled={watchList.length===0||dailyLossHit} className={!dailyLossHit?"glow":""}
+                style={{width:"100%",background:dailyLossHit?T.border:autoMode?T.green:T.accent,color:"#000",border:"none",borderRadius:8,padding:"12px 0",fontSize:14,fontWeight:700,cursor:"pointer",opacity:watchList.length===0||dailyLossHit?0.4:1}}>
+                {autoMode?"🚀 자동매매 시작":"🔍 자동 분석 시작"}
+              </button>
+            )}
+          </div>
+
+          {/* 감시 종목 */}
+          <div style={{background:T.panel,border:`1px solid ${T.border}`,borderRadius:10,padding:16}}>
+            <div style={{fontSize:11,color:T.muted,marginBottom:10,letterSpacing:1}}>감시 종목 ({watchList.length})</div>
+            <div style={{display:"flex",gap:6,marginBottom:10}}>
+              <input value={addTicker} onChange={e=>setAddTicker(e.target.value.replace(/\D/g,"").slice(0,6))} placeholder="종목코드 6자리"
+                style={{flex:1,background:T.bg,border:`1px solid ${T.border}`,borderRadius:6,padding:"7px 10px",color:T.text,fontSize:13,outline:"none"}}
+                onKeyDown={e=>{if(e.key==="Enter"&&addTicker.length===6){setWatchList(p=>[...new Set([...p,addTicker])]);setAddTicker("");}}}/>
+              <button onClick={()=>{if(addTicker.length===6){setWatchList(p=>[...new Set([...p,addTicker])]);setAddTicker("");}}}
+                style={{background:T.accent,color:"#000",border:"none",borderRadius:6,padding:"7px 14px",fontSize:13,fontWeight:700,cursor:"pointer"}}>+</button>
+            </div>
+            <div style={{display:"flex",flexDirection:"column",gap:6}}>
+              {watchList.map(t=>{
+                const st=stockStatus[t];
+                const ac=st?.action==="매수"?T.green:st?.action==="매도"?T.red:T.muted;
+                const hasPos=!!positions[t];
+                return(
+                  <div key={t} style={{display:"flex",alignItems:"center",justifyContent:"space-between",background:T.bg,borderRadius:8,padding:"8px 12px",border:`1px solid ${hasPos?T.accent:T.border}`}}>
+                    <div style={{flex:1}}>
+                      <div style={{display:"flex",alignItems:"center",gap:8}}>
+                        <span style={{fontSize:13,fontWeight:700,color:T.text,letterSpacing:1}}>{t}</span>
+                        {hasPos&&<Badge color={T.accent}>보유중</Badge>}
+                        {st&&<Badge color={ac}>{st.action} {st.confidence}%</Badge>}
+                      </div>
+                      {st&&<div style={{fontSize:10,color:T.muted,marginTop:3}}>{st.price?.toLocaleString()}원 · {st.lastChecked}</div>}
+                    </div>
+                    <div style={{display:"flex",gap:6}}>
+                      <button onClick={()=>manualAnalyze(t)} style={{background:`${T.accent}20`,border:`1px solid ${T.accent}40`,color:T.accent,borderRadius:6,padding:"4px 8px",fontSize:10,cursor:"pointer"}}>분석</button>
+                      <button onClick={()=>setWatchList(p=>p.filter(x=>x!==t))} style={{background:"none",border:`1px solid ${T.border}`,color:T.muted,borderRadius:6,padding:"4px 8px",fontSize:10,cursor:"pointer"}}>✕</button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* 잔고 */}
+          <div style={{background:T.panel,border:`1px solid ${T.border}`,borderRadius:10,padding:16}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+              <div style={{fontSize:11,color:T.muted,letterSpacing:1}}>잔고</div>
+              <button onClick={refreshBalance} style={{background:"none",border:`1px solid ${T.border}`,color:T.muted,borderRadius:6,padding:"3px 8px",fontSize:10,cursor:"pointer"}}>새로고침</button>
+            </div>
+            {balance?.output2?.[0]&&(
+              <div style={{marginBottom:8}}>
+                <div style={{fontSize:10,color:T.muted}}>예수금</div>
+                <div style={{fontSize:18,fontWeight:700,color:T.accent}}>{parseInt(balance.output2[0].dnca_tot_amt).toLocaleString()}원</div>
+              </div>
+            )}
+            {(balance?.output1||[]).slice(0,5).map((h,i)=>(
+              <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"5px 0",borderTop:`1px solid ${T.border}`}}>
+                <span style={{fontSize:11,color:T.text}}>{h.prdt_name}</span>
+                <span style={{fontSize:11,color:parseFloat(h.evlu_pfls_rt)>=0?T.green:T.red}}>{parseInt(h.hldg_qty)}주 {parseFloat(h.evlu_pfls_rt)>=0?"▲":"▼"}{Math.abs(parseFloat(h.evlu_pfls_rt)).toFixed(1)}%</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* 오른쪽: 로그 + 거래내역 */}
+        <div style={{display:"flex",flexDirection:"column",gap:12}}>
+
+          {/* 오늘 통계 */}
+          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10}}>
+            {[
+              {label:"오늘 손익",val:`${todayPnl>=0?"+":""}${todayPnl.toLocaleString()}원`,color:pnlColor},
+              {label:"보유 종목수",val:`${Object.keys(positions).length}개`,color:T.text},
+              {label:"감시 종목수",val:`${watchList.length}개`,color:T.text},
+              {label:"거래 횟수",val:`${tradeHistory.length}건`,color:T.text},
+            ].map(({label,val,color})=>(
+              <div key={label} style={{background:T.panel,border:`1px solid ${T.border}`,borderRadius:10,padding:"12px 14px"}}>
+                <div style={{fontSize:10,color:T.muted,marginBottom:4}}>{label}</div>
+                <div style={{fontSize:15,fontWeight:700,color}}>{val}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* 보유 포지션 */}
+          {Object.keys(positions).length>0&&(
+            <div style={{background:T.panel,border:`1px solid ${T.accent}40`,borderRadius:10,padding:14}}>
+              <div style={{fontSize:11,color:T.muted,marginBottom:10,letterSpacing:1}}>보유 포지션</div>
+              {Object.entries(positions).map(([ticker,pos])=>{
+                const st=stockStatus[ticker];
+                const cur=st?.price||pos.buyPrice;
+                const pnl=(cur-pos.buyPrice)*pos.qty;
+                const pnlPct=((cur-pos.buyPrice)/pos.buyPrice*100).toFixed(2);
+                return(
+                  <div key={ticker} style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr auto",gap:10,alignItems:"center",padding:"8px 0",borderBottom:`1px solid ${T.border}`}}>
+                    <div><div style={{fontSize:12,fontWeight:700}}>{ticker}</div><div style={{fontSize:10,color:T.muted}}>{pos.qty}주</div></div>
+                    <div><div style={{fontSize:10,color:T.muted}}>매수가</div><div style={{fontSize:12}}>{pos.buyPrice.toLocaleString()}</div></div>
+                    <div><div style={{fontSize:10,color:T.muted}}>현재가</div><div style={{fontSize:12}}>{cur.toLocaleString()}</div></div>
+                    <div><div style={{fontSize:10,color:T.muted}}>평가손익</div><div style={{fontSize:12,color:pnl>=0?T.green:T.red}}>{pnl>=0?"+":""}{pnl.toLocaleString()}원 ({pnlPct}%)</div></div>
+                    <button onClick={()=>executeOrder(ticker,pos.qty,0,"sell","수동매도")} style={{background:`${T.red}20`,border:`1px solid ${T.red}50`,color:T.red,borderRadius:6,padding:"5px 10px",fontSize:11,cursor:"pointer"}}>매도</button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* 실시간 로그 */}
+          <LogPanel log={log}/>
+
+          {/* 거래 내역 */}
+          {tradeHistory.length>0&&(
+            <div style={{background:T.panel,border:`1px solid ${T.border}`,borderRadius:10,padding:14}}>
+              <div style={{fontSize:11,color:T.muted,marginBottom:10,letterSpacing:1}}>체결 내역</div>
+              <div style={{maxHeight:200,overflowY:"auto",display:"flex",flexDirection:"column",gap:4}}>
+                {tradeHistory.map((h,i)=>(
+                  <div key={i} style={{display:"flex",gap:10,fontSize:11,padding:"5px 0",borderBottom:`1px solid ${T.border}`,alignItems:"center"}}>
+                    <span style={{color:T.muted,minWidth:60}}>{h.time}</span>
+                    <Badge color={h.side==="buy"?T.green:T.red}>{h.side==="buy"?"매수":"매도"}</Badge>
+                    <span style={{color:T.text,fontWeight:700}}>{h.ticker}</span>
+                    <span style={{color:T.sub}}>{h.qty}주 @{h.price.toLocaleString()}원</span>
+                    <Badge color={T.accent}>{h.reason}</Badge>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div style={{textAlign:"center",fontSize:10,color:T.muted,marginTop:14,lineHeight:1.8}}>
+        ⚠️ AI 자동매매는 손실 위험이 있습니다. 투자 결과에 대한 책임은 전적으로 사용자에게 있습니다.<br/>
+        반드시 모의투자로 전략을 검증한 후 실전투자에 적용하세요.
+      </div>
+    </div>
+  );
+}
+ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
+</script>
+</body>
+</html>
