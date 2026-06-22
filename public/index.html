@@ -34,7 +34,7 @@ async function proxyGET(path,query,cred,mode){
   const target=new URL(base(mode)+path);
   const{tr_id,...rest}=query;
   Object.entries(rest).forEach(([k,v])=>target.searchParams.set(k,v));
-  const res=await fetch(`${PROXY}?target=${encodeURIComponent(target.toString())}`,{headers:{authorization:`Bearer ${cred.accessToken}`,appkey:cred.appKey,appsecret:cred.appSecret,tr_id}});
+  const res=await fetch(`${PROXY}?target=${encodeURIComponent(target.toString())}`,{cache:"no-store",headers:{authorization:`Bearer ${cred.accessToken}`,appkey:cred.appKey,appsecret:cred.appSecret,tr_id}});
   const d=await res.json();if(d.error)throw new Error(d.error+(d.cause?` (${d.cause})`:"")); if(d.rt_cd&&d.rt_cd!=="0")throw new Error(d.msg1||`API 오류 rt_cd:${d.rt_cd}`);return d;
 }
 async function proxyPOST(path,body,tr_id,cred,mode){
