@@ -212,7 +212,10 @@ function App(){
   // ── 단일 종목 분석 사이클 ──
   const analyzeTicker=async(ticker)=>{
     try{
-      const [priceData,chart]=await Promise.all([getPrice(ticker,cred,mode),getChart(ticker,cred,mode)]);
+      const priceData=await getPrice(ticker,cred,mode);
+      await new Promise(r=>setTimeout(r,1000));
+      const chart=await getChart(ticker,cred,mode);
+      await new Promise(r=>setTimeout(r,500));
       const currentPrice=parseInt(priceData.stck_prpr);
       const ind=computeInd(chart);
 
