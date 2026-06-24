@@ -30,39 +30,33 @@ const TR={real:{order_buy:"TTTC0802U",order_sell:"TTTC0801U",balance:"TTTC8434R"
 const base=mode=>mode==="real"?KIS_REAL:KIS_VTS;
 
 // ── API ──────────────────────────────────────────────────────────────────────
-async function proxyGET(path,query,cred,mode){
+async function kisCall(path,query,cred,mode,postBody){
   const target=new URL(base(mode)+path);
-  const{tr_id,...rest}=query;
-  Object.entries(rest).forEach(([k,v])=>target.searchParams.set(k,v));
-  const res=await fetch(`${PROXY}?target=${encodeURIComponent(target.toString())}`,{cache:"no-store",headers:{authorization:`Bearer ${cred.accessToken}`,appkey:cred.appKey,appsecret:cred.appSecret,tr_id,custtype:"P"}});
-  const d=await res.json();if(d.error)throw new Error(d.error+(d.cause?` (${d.cause})`:"")); if(d.rt_cd&&d.rt_cd!=="0")throw new Error(d.msg1||`API 오류 rt_cd:${d.rt_cd}`);return d;
-}
-async function proxyPOST(path,body,tr_id,cred,mode){
-  const target=base(mode)+path;
-  const res=await fetch(`${PROXY}?target=${encodeURIComponent(target)}`,{method:"POST",headers:{"Content-Type":"application/json",authorization:`Bearer ${cred.accessToken}`,appkey:cred.appKey,appsecret:cred.appSecret,tr_id},body:JSON.stringify(body)});
-  const d=await res.json();if(d.rt_cd&&d.rt_cd!=="0")throw new Error(d.msg1||`주문 오류`);return d;
+  if(query){const{tr_id,...rest}=query;Object.entries(rest).forEach(([k,v])=>target.searchParams.set(k,v));}
+  const kisHeaders={authorization:`Bearer ${cred.accessToken}`,appkey:cred.appKey,appsecret:cred.appSecret,custtype:"P"};
+  if(query?.tr_id)kisHeaders.tr_id=query.tr_id;
+  const payload={_target:target.toString(),_method:postBody?"POST":"GET",_headers:kisHeaders};
+  if(postBody)payload._body=postBody;
+  const res=await fetch(PROXY,{method:"POST",cache:"no-store",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+  const d=await res.json();
+  if(d.error)throw new Error(d.error);
+  if(d.rt_cd&&d.rt_cd!=="0")throw new Error(d.msg1||"API오류");
+  return d;
 }
 async function getToken(appKey,appSecret,mode){
   const target=`${base(mode)}/oauth2/tokenP`;
-  const res=await fetch(`${PROXY}?target=${encodeURIComponent(target)}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({grant_type:"client_credentials",appkey:appKey,appsecret:appSecret})});
+  const res=await fetch(PROXY,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({_target:target,_method:"POST",_headers:{"Content-Type":"application/json"},_body:{grant_type:"client_credentials",appkey:appKey,appsecret:appSecret}})})
   const d=await res.json();if(!d.access_token)throw new Error(d.error_description||"토큰 발급 실패");return d.access_token;
 }
-async function getPrice(ticker,cred,mode){const d=await proxyGET("/uapi/domestic-stock/v1/quotations/inquire-price",{tr_id:TR[mode].price,FID_COND_MRKT_DIV_CODE:"J",FID_INPUT_ISCD:ticker},cred,mode);return d.output;}
+async function getPrice(ticker,cred,mode){const d=await kisCall("/uapi/domestic-stock/v1/quotations/inquire-price",{tr_id:TR[mode].price,FID_COND_MRKT_DIV_CODE:"J",FID_INPUT_ISCD:ticker},cred,mode);return d.output;}
 async function getChart(ticker,cred,mode){
-  // FHKST01010400: 날짜 파라미터 없음, output 키 사용 (최근 30일)
-  const d=await proxyGET("/uapi/domestic-stock/v1/quotations/inquire-daily-price",{
-    tr_id:"FHKST01010400",
-    FID_COND_MRKT_DIV_CODE:"J",
-    FID_INPUT_ISCD:ticker,
-    FID_PERIOD_DIV_CODE:"D",
-    FID_ORG_ADJ_PRC:"0000000001",
-  },cred,mode);
+  const d=await kisCall("/uapi/domestic-stock/v1/quotations/inquire-daily-price",{tr_id:"FHKST01010400",FID_COND_MRKT_DIV_CODE:"J",FID_INPUT_ISCD:ticker,FID_PERIOD_DIV_CODE:"D",FID_ORG_ADJ_PRC:"0000000001"},cred,mode);
   return(d.output||[]).slice(0,30).reverse();
 }
-async function getBalance(cred,mode){return proxyGET("/uapi/domestic-stock/v1/trading/inquire-balance",{tr_id:TR[mode].balance,CANO:cred.accountNo.slice(0,8),ACNT_PRDT_CD:cred.accountNo.slice(8)||"01",AFHR_FLPR_YN:"N",OFL_YN:"",INQR_DVSN:"02",UNPR_DVSN:"01",FUND_STTL_ICLD_YN:"N",FNCG_AMT_AUTO_RDPT_YN:"N",PRCS_DVSN:"01",CTX_AREA_FK100:"",CTX_AREA_NK100:""},cred,mode);}
+async function getBalance(cred,mode){return kisCall("/uapi/domestic-stock/v1/trading/inquire-balance",{tr_id:TR[mode].balance,CANO:cred.accountNo.slice(0,8),ACNT_PRDT_CD:cred.accountNo.slice(8)||"01",AFHR_FLPR_YN:"N",OFL_YN:"",INQR_DVSN:"02",UNPR_DVSN:"01",FUND_STTL_ICLD_YN:"N",FNCG_AMT_AUTO_RDPT_YN:"N",PRCS_DVSN:"01",CTX_AREA_FK100:"",CTX_AREA_NK100:""},cred,mode);}
 async function placeOrder(ticker,qty,price,side,cred,mode){
   const tr_id=side==="buy"?TR[mode].order_buy:TR[mode].order_sell;
-  return proxyPOST("/uapi/domestic-stock/v1/trading/order-cash",{CANO:cred.accountNo.slice(0,8),ACNT_PRDT_CD:cred.accountNo.slice(8)||"01",PDNO:ticker,ORD_DVSN:"01",ORD_QTY:String(qty),ORD_UNPR:"0"},tr_id,cred,mode);
+  return kisCall("/uapi/domestic-stock/v1/trading/order-cash",{tr_id},cred,mode,{CANO:cred.accountNo.slice(0,8),ACNT_PRDT_CD:cred.accountNo.slice(8)||"01",PDNO:ticker,ORD_DVSN:"01",ORD_QTY:String(qty),ORD_UNPR:"0"});
 }
 
 // ── 지표 ─────────────────────────────────────────────────────────────────────
