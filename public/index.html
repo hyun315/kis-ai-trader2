@@ -45,8 +45,10 @@ async function kisCall(path,query,cred,mode,postBody){
 }
 async function getToken(appKey,appSecret,mode){
   const target=`${base(mode)}/oauth2/tokenP`;
-  const res=await fetch(PROXY,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({_target:target,_method:"POST",_headers:{"Content-Type":"application/json"},_body:{grant_type:"client_credentials",appkey:appKey,appsecret:appSecret}})})
-  const d=await res.json();if(!d.access_token)throw new Error(d.error_description||"토큰 발급 실패");return d.access_token;
+  const res=await fetch(PROXY,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({_target:target,_method:"POST",_headers:{"Content-Type":"application/json; charset=utf-8"},_body:{grant_type:"client_credentials",appkey:appKey,appsecret:appSecret}})});
+  const d=await res.json();
+  if(!d.access_token)throw new Error(d.msg1||d.error_description||JSON.stringify(d));
+  return d.access_token;
 }
 async function getPrice(ticker,cred,mode){const d=await kisCall("/uapi/domestic-stock/v1/quotations/inquire-price",{tr_id:TR[mode].price,FID_COND_MRKT_DIV_CODE:"J",FID_INPUT_ISCD:ticker},cred,mode);return d.output;}
 async function getChart(ticker,cred,mode){
